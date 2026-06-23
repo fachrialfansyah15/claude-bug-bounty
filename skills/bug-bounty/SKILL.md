@@ -269,25 +269,25 @@ cat semgrep-results.json | jq '.results[] | select(.extra.severity == "ERROR") |
 > **Athul Mindset (@Athul_m_s):** "Don't skip default pages (IIS, 404, 403) — fuzz maximum using raft-medium-words.txt. Recon is everything. Fuzz deeper than anyone else on the same target."
 ```bash
 # THE ONE RULE: Always use -ac (auto-calibrate filters noise automatically)
-ffuf -w ~/Downloads/SecLists/Discovery/Web-Content/raft-medium-words.txt -u https://target.com/FUZZ -ac -mc 200,301,302,403,500 -fc 404
+ffuf -w ../wordlist/raft-medium-words.txt -u https://target.com/FUZZ -ac -mc 200,301,302,403,500 -fc 404
 
 # Dont skip 403/404 default pages!
-ffuf -u https://target.com/FUZZ -w ~/Downloads/SecLists/Discovery/Web-Content/raft-medium-words.txt -mc 200,301,302,403 -ac -o ffuf_deep.json
+ffuf -u https://target.com/FUZZ -w ../wordlist/raft-medium-words.txt -mc 200,301,302,403 -ac -o ffuf_deep_target.json
 
 # Authenticated raw request file — IDOR testing (save Burp request to req.txt, replace ID with FUZZ)
 seq 1 10000 | ffuf --request req.txt -w - -ac
 
 # Authenticated API endpoint brute
-ffuf -u https://TARGET/api/FUZZ -w ~/Downloads/SecLists/Discovery/Web-Content/api/api-endpoints.txt -H "Cookie: session=TOKEN" -ac
+ffuf -u https://TARGET/api/FUZZ -w ../wordlist/api-endpoints.txt -H "Cookie: session=TOKEN" -ac
 
 # Parameter discovery
-ffuf -w ~/Downloads/SecLists/Discovery/Web-Content/burp-parameter-names.txt -u "https://target.com/api/endpoint?FUZZ=test" -ac -mc 200
+ffuf -w ../wordlist/burp-parameter-names.txt -u "https://target.com/api/endpoint?FUZZ=test" -ac -mc 200
 
 # Hidden POST parameters
-ffuf -w ~/Downloads/SecLists/Discovery/Web-Content/burp-parameter-names.txt -X POST -d "FUZZ=test" -u "https://target.com/api/endpoint" -ac
+ffuf -w ../wordlist/burp-parameter-names.txt -X POST -d "FUZZ=test" -u "https://target.com/api/endpoint" -ac
 
 # Subdomain scan
-ffuf -w ~/Downloads/SecLists/Discovery/DNS/subdomains-top1million-5000.txt -u https://FUZZ.target.com -ac
+ffuf -w ../wordlist/subdomains-top1million-5000.txt -u https://FUZZ.target.com -ac
 
 # Filter strategies:
 # -fc 404,403          Filter status codes
@@ -361,7 +361,7 @@ done
 ## API Endpoint Discovery
 ```bash
 # ffuf API endpoint brute
-ffuf -u https://TARGET/api/FUZZ -w ~/Downloads/SecLists/Discovery/Web-Content/api/api-endpoints.txt -mc 200,201,301,302,403 -ac
+ffuf -u https://TARGET/api/FUZZ -w ../wordlist/api-endpoints.txt -mc 200,201,301,302,403 -ac
 ```
 
 ## HackerOne Scope Retrieval
