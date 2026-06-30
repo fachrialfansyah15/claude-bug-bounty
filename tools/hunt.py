@@ -432,16 +432,62 @@ def hunt_target(domain, quick=False, recon_only=False, scan_only=False, cve_hunt
     """Run the full hunt pipeline on a single target."""
     result = {"domain": domain, "success": True, "recon": False, "scan": False, "reports": 0}
 
+    global _AUTH_SESSION
+    original_session = _AUTH_SESSION
+
+    # Detect multi-sessions for IDOR/SSRF
+    import glob
+    private_dir = os.path.join(BASE_DIR, ".private")
+    attacker_file = os.path.join(private_dir, f"{domain}-attacker.json")
+    
+    # Grab all files matching domain*.json (supports domain-attacker.json, domain-victim.json, or just domain.json)
+    all_files = glob.glob(os.path.join(private_dir, f"{domain}*.json"))
+
+    hunt_sessions = [original_session]
+    if original_session and original_session.is_empty() and all_files:
+        # Sort alphabetically (so attacker usually comes before victim)
+        all_files.sort()
+        # Untuk Recon: pakai sesi attacker jika ada, jika tidak pakai file pertama yang ketemu
+        if os.path.exists(attacker_file):
+            _AUTH_SESSION = AuthSession.from_file(attacker_file)
+        else:
+            _AUTH_SESSION = AuthSession.from_file(all_files[0])
+            
+        # Untuk Hunt: jalankan scan untuk semua sesi yang ditemukan
+        hunt_sessions = [AuthSession.from_file(f) for f in all_files]
+
     if not scan_only:
         result["recon"] = run_recon(domain, quick=quick)
         if not result["recon"]:
             log("warn", f"Recon had issues for {domain}, continuing anyway...")
 
     if recon_only:
+        _AUTH_SESSION = original_session
         return result
 
     check_cicd_results(domain)
-    result["scan"] = run_vuln_scan(domain, quick=quick)
+    
+    # Run scan for each detected session (useful for cross-account IDOR testing)
+    for idx, session in enumerate(hunt_sessions):
+        if len(hunt_sessions) > 1:
+            log("info", f"--- Running Hunt Scan [{idx+1}/{len(hunt_sessions)}] ---")
+            log("info", session.describe())
+        _AUTH_SESSION = session
+        scan_ok = run_vuln_scan(domain, quick=quick)
+        if scan_ok:
+            result["scan"] = True
+            # Notifier: alert user that vuln scanner finished successfully
+            try:
+                import subprocess
+                notifier_script = os.path.join(BASE_DIR, "tools", "notifier.py")
+                if os.path.exists(notifier_script):
+                    msg = f"🎯 [BugBounty] Vuln Scan completed for {domain} (Session {idx+1}/{len(hunt_sessions)}). Check findings!"
+                    subprocess.run([sys.executable, notifier_script, msg], capture_output=True)
+            except Exception:
+                pass
+            
+    # Restore the original global session just in case
+    _AUTH_SESSION = original_session
 
     # CVE hunting (only when explicitly requested)
     if cve_hunt:
@@ -480,12 +526,24 @@ Examples:
     parser.add_argument("--setup-wordlists", action="store_true", help="Download wordlists")
     parser.add_argument("--cve-hunt", action="store_true", help="Run CVE hunter")
     parser.add_argument("--zero-day", action="store_true", help="Run zero-day fuzzer")
+    parser.add_argument("--proxy", type=str, help="Proxy URL (e.g. socks5://127.0.0.1:9050)")
     parser.add_argument("--select-targets", action="store_true", help="Only run target selection")
     parser.add_argument("--top", type=int, default=10, help="Number of targets to select")
     parser.add_argument("--no-banner", action="store_true",
                         help="Suppress the startup banner (useful for CI / piped output)")
     add_cli_args(parser)
     args = parser.parse_args(argv)
+
+    # Auto-detect auth file based on target if not explicitly provided
+    if args.target and not getattr(args, "auth_file", None):
+        auto_auth_path = os.path.join(BASE_DIR, ".private", f"{args.target}.json")
+        if os.path.exists(auto_auth_path):
+            setattr(args, "auth_file", auto_auth_path)
+            log("info", f"Auto-detected auth file: {auto_auth_path}")
+
+    if args.proxy:
+        os.environ["BBHUNT_PROXY"] = args.proxy
+        log("info", f"Using proxy: {args.proxy}")
 
     # Build the auth session once. It propagates to every subprocess via
     # BBHUNT_AUTH_HEADERS / BBHUNT_SESSION_ID env vars (set per-call so the

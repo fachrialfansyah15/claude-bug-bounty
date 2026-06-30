@@ -68,6 +68,17 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+# Ensure stdout/stderr use UTF-8 on all platforms (Windows cp1252, some Linux locales)
+# so that → — ─ ⚠ and other Unicode chars always print correctly.
+try:
+    import io as _io
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+except Exception:
+    pass  # Fallback: keep original stdout (e.g. when piped to another process)
+
 try:
     import ollama as _ollama_lib
 except ImportError:
@@ -98,7 +109,7 @@ class LLMClient:
     # Priority: free-local first, free-cloud second, paid last
     PROVIDER_PRIORITY = [
         "ollama", "groq", "deepseek", "cerebras",
-        "gemini", "kimi", "mistral", "together",
+        "gemini", "kimi", "mistral", "together", "zhipu",
         "perplexity", "claude", "openai", "grok",
     ]
 
@@ -115,6 +126,7 @@ class LLMClient:
         "together":    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "cerebras":    "llama3.3-70b",
         "perplexity":  "sonar-pro",
+        "zhipu":       "glm-5.2",
         "ollama":      None,  # resolved dynamically
     }
 
@@ -143,6 +155,7 @@ class LLMClient:
         "together":    "TOGETHER_API_KEY",
         "cerebras":    "CEREBRAS_API_KEY",
         "perplexity":  "PERPLEXITY_API_KEY",
+        "zhipu":       "ZHIPU_API_KEY",
     }
 
     def _auto_detect(self) -> str:
@@ -313,6 +326,18 @@ class LLMClient:
             self.available   = True
             self.description = "Perplexity AI (sonar-pro — live web search)"
 
+        elif provider == "zhipu":
+            key = os.environ.get("ZHIPU_API_KEY", "")
+            if not key:
+                return
+            import requests
+            self._http = requests.Session()
+            self._http.headers.update({"Authorization": f"Bearer {key}",
+                                       "Content-Type": "application/json"})
+            self._api_base   = "https://open.bigmodel.cn/api/paas/v4"
+            self.available   = True
+            self.description = "Zhipu AI (GLM)"
+
     def chat(self, model: str | None, system: str, user: str,
              max_tokens: int = 4000, temperature: float = 0.1) -> str:
         """Send a chat request; return the assistant reply as a string."""
@@ -325,7 +350,7 @@ class LLMClient:
                 return self._chat_claude(model, system, user, max_tokens, temperature)
             elif self.provider in (
                 "openai", "grok", "groq", "deepseek",
-                "gemini", "kimi", "mistral", "together", "cerebras", "perplexity",
+                "gemini", "kimi", "mistral", "together", "cerebras", "perplexity", "zhipu"
             ):
                 return self._chat_openai_compat(model, system, user, max_tokens, temperature)
         except Exception as e:
@@ -408,6 +433,8 @@ class LLMClient:
             return ["llama3.3-70b", "llama3.1-8b"]
         elif self.provider == "perplexity":
             return ["sonar-pro", "sonar", "sonar-reasoning-pro", "sonar-reasoning"]
+        elif self.provider == "zhipu":
+            return ["glm-5.2", "glm-4-plus", "glm-4-flashx", "glm-4-air"]
         return []
 
 # Model preference order — first available wins

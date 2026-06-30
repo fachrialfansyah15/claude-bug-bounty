@@ -327,6 +327,29 @@ else
 fi
 
 # ============================================================
+# Phase 2.5: Visual Recon (Screenshots)
+# ============================================================
+echo ""
+log_info "Phase 2.5: Visual Recon (Screenshots)"
+
+if command -v gowitness &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
+    log_step "Taking screenshots with gowitness..."
+    SCREENSHOT_DIR="$RECON_DIR/screenshots"
+    mkdir -p "$SCREENSHOT_DIR"
+    
+    timeout 300 gowitness file \
+        -f "$RECON_DIR/live/urls.txt" \
+        --threads "$THREADS" \
+        --destination "$SCREENSHOT_DIR" \
+        --disable-logging 2>/dev/null || true
+        
+    SHOT_COUNT=$(find "$SCREENSHOT_DIR" -type f -name "*.png" 2>/dev/null | wc -l | tr -d ' ')
+    log_done "gowitness: $SHOT_COUNT screenshots captured"
+else
+    [ -z "$(command -v gowitness)" ] && log_warn "gowitness not installed — skipping visual recon" || log_warn "No live URLs — skipping visual recon"
+fi
+
+# ============================================================
 # Phase 3: Port Scanning
 # ============================================================
 echo ""

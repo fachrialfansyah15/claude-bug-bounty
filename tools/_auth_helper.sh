@@ -67,7 +67,20 @@ bb_auth_banner() {
     if [ -n "$BB_AUTH_SESSION_ID" ]; then
         echo "[auth] session=$BB_AUTH_SESSION_ID headers=$(( ${#BB_AUTH_ARGS[@]} / 2 ))"
     fi
+    if [ -n "${BBHUNT_PROXY:-}" ]; then
+        echo "[proxy] active: $BBHUNT_PROXY"
+    fi
 }
+
+# Proxy Injection: if BBHUNT_PROXY is set, inject it into tools that support it.
+# (Usually handled by bash's built-in HTTP_PROXY, but explicit args are safer)
+if [ -n "${BBHUNT_PROXY:-}" ]; then
+    export HTTP_PROXY="$BBHUNT_PROXY"
+    export HTTPS_PROXY="$BBHUNT_PROXY"
+    export http_proxy="$BBHUNT_PROXY"
+    export https_proxy="$BBHUNT_PROXY"
+    # Note: Curl/httpx will respect HTTP_PROXY automatically.
+fi
 
 # True if auth is active for this run.
 bb_auth_active() {
